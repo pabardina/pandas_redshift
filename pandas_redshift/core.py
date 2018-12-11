@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-from io import StringIO
+from io import BytesIO, StringIO
+import gzip
 import pandas as pd
 import traceback
 import psycopg2
@@ -98,11 +99,23 @@ def df_to_s3(data_frame, csv_name, index, save_local, delimiter, **kwargs):
     if save_local == True:
         data_frame.to_csv(csv_name, index=index, sep=delimiter)
         print('saved file {0} in {1}'.format(csv_name, os.getcwd()))
-    #
+
+    # write DF to string stream
     csv_buffer = StringIO()
     data_frame.to_csv(csv_buffer, index=index, sep=delimiter)
+
+    # reset stream position
+    csv_buffer.seek(0)
+    # create binary stream
+    gz_buffer = BytesIO()
+
+    # compress string stream using gzip
+    with gzip.GzipFile(mode='w', fileobj=gz_buffer) as gz_file:
+        gz_file.write(bytes(csv_buffer.getvalue(), 'utf-8'))
+
+    # write stream to S3
     s3.Bucket(s3_bucket_var).put_object(
-        Key=s3_subdirectory_var + csv_name, Body=csv_buffer.getvalue(),
+        Key=s3_subdirectory_var + csv_name, Body=gz_buffer.getvalue(),
         **extra_kwargs)
     print('saved file {0} in bucket {1}'.format(
         csv_name, s3_subdirectory_var + csv_name))
@@ -158,7 +171,7 @@ def create_redshift_table(data_frame,
 def s3_to_redshift(redshift_table_name, delimiter=',', quotechar='"',
                    dateformat='auto', timeformat='auto', region='', parameters=''):
 
-    bucket_name = 's3://{0}/{1}.csv'.format(
+    bucket_name = 's3://{0}/{1}.csv.gz'.format(
                         s3_bucket_var, s3_subdirectory_var + redshift_table_name)
 
     if aws_1 and aws_2:
@@ -178,7 +191,7 @@ def s3_to_redshift(redshift_table_name, delimiter=',', quotechar='"',
     from '{1}'
     delimiter '{2}'
     ignoreheader 1
-    csv quote as '{3}'
+    GZIP csv quote as '{3}'
     dateformat '{4}'
     timeformat '{5}'
     {6}
@@ -224,7 +237,7 @@ def pandas_to_redshift(data_frame,
     # Validate column names.
     data_frame = validate_column_names(data_frame)
     # Send data to S3
-    csv_name = redshift_table_name + '.csv'
+    csv_name = redshift_table_name + '.csv.gz'
     s3_kwargs = {k: v for k, v in kwargs.items() if k in S3_ACCEPTED_KWARGS and v is not None}
     df_to_s3(data_frame, csv_name, index, save_local, delimiter, **s3_kwargs)
 
